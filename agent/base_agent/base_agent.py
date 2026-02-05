@@ -19,6 +19,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 # Best-effort import for a console/stdout callback handler across LangChain versions
 try:  # langchain <=0.1 style
@@ -233,7 +234,7 @@ class BaseAgent:
         openai_base_url: Optional[str] = None,
         openai_api_key: Optional[str] = None,
         initial_cash: float = 10000.0,
-        init_date: str = "2025-10-13",
+        init_date: str = "2026-02-02",
         market: str = "us",
         verbose: bool = False
     ):
@@ -259,7 +260,6 @@ class BaseAgent:
         self.signature = signature
         self.basemodel = basemodel
         self.market = market
-
         # Auto-select stock symbols based on market if not provided
         if stock_symbols is None:
             if market == "cn":
@@ -279,7 +279,7 @@ class BaseAgent:
         self.initial_cash = initial_cash
         self.init_date = init_date
         self.verbose = verbose
-
+        self.google_api_key = os.getenv("GOOGLE_API_KEY")
         # Set MCP configuration
         self.mcp_config = mcp_config or self._get_default_mcp_config()
 
@@ -377,9 +377,29 @@ class BaseAgent:
             )
 
         try:
-            # Create AI model - use custom DeepSeekChatOpenAI for DeepSeek models
-            # to handle tool_calls.args format differences (JSON string vs dict)
-            if "deepseek" in self.basemodel.lower():
+            if self.basemodel.lower().startswith("gemini-"):
+                if not self.google_api_key:
+                    raise ValueError(
+                        "❌ GOOGLE_API_KEY not set in .env. Required for Gemini models."
+                    )
+
+                self.model = ChatGoogleGenerativeAI(
+                    model=self.basemodel,                   # e.g. "gemini-2.5-flash" or "gemini-2.5-flash-lite"
+                    google_api_key=self.google_api_key,
+                    temperature=0.4,                        # lower = more deterministic trading decisions
+                    max_output_tokens=2048,                 # adjust based on needs (most models allow 8192+)
+                    max_retries=3,
+                    timeout=45,                             # Gemini can be a bit slower sometimes
+                    # Optional: safety settings if you get blocked
+                    # safety_settings={
+                    #     "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_NONE",
+                    #     ...
+                    # }
+                )
+                print(f"🚀 Using Gemini model: {self.basemodel}")
+
+            elif "deepseek" in self.basemodel.lower():
+                # keep your existing DeepSeek logic
                 self.model = DeepSeekChatOpenAI(
                     model=self.basemodel,
                     base_url=self.openai_base_url,
@@ -388,6 +408,7 @@ class BaseAgent:
                     timeout=30,
                 )
             else:
+                # fallback to original OpenAI-style
                 self.model = ChatOpenAI(
                     model=self.basemodel,
                     base_url=self.openai_base_url,
@@ -395,13 +416,9 @@ class BaseAgent:
                     max_retries=3,
                     timeout=30,
                 )
+
         except Exception as e:
             raise RuntimeError(f"❌ Failed to initialize AI model: {e}")
-
-        # Note: agent will be created in run_trading_session() based on specific date
-        # because system_prompt needs the current date and price information
-
-        print(f"✅ Agent {self.signature} initialization completed")
 
     def _setup_logging(self, today_date: str) -> str:
         """Set up log file path"""
